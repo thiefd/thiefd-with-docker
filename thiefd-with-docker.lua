@@ -1,5 +1,6 @@
 local socket = require "socket"
-local http = require "socket.http"
+local ssl = require "ssl"
+local https = require "ssl.https"
 local ltn12 = require "ltn12"
 local lanes = require "lanes".configure()
 
@@ -47,6 +48,9 @@ end
 local DOCKER_IMAGE
 local FORWARD_MODE = false
 local FORWARD_WEBHOOK_URL
+local SERVER_CERT = "/path/to/server.crt"
+local SERVER_KEY = "/path/to/server.key"
+local CA_CERT = "/path/to/ca.crt"
 
 local function execute_docker_command(docker_image, command)
     if not docker_image or docker_image == "" then
@@ -71,7 +75,7 @@ local function send_webhook(url, data)
     local payload = simple_json_encode({text = data})
     local response = {}
     
-    local request, code = http.request{
+    local request, code = https.request{
         url = url,
         method = "POST",
         headers = {
@@ -96,16 +100,47 @@ local function handle_async_request(docker_image, command)
     linda:send("async_results", result)
 end
 
-local function handle_request(client)
-    debug_print("Handling new request")
-    client:settimeout(15)
+local function create_https_server(port)
+    local server = assert(socket.bind("0.0.0.0", port))
+    local ctx = assert(ssl.newcontext({
+        mode = "server",
+        protocol = "any",
+        key = SERVER_KEY,
+        certificate = SERVER_CERT,
+        cafile = CA_CERT,
+        verify = {"peer", "fail_if_no_peer_cert"},
+        options = {"all", "no_sslv2", "no_sslv3", "no_tlsv1"}
+    }))
+    return server, ctx
+end
+
+local function handle_https_request(client, ctx)
+    local ssl_client = assert(ssl.wrap(client, ctx))
+    local success, err = ssl_client:dohandshake()
+    if not success then
+        error_print("TLS handshake failed: " .. tostring(err))
+        ssl_client:close()
+        return
+    end
+
+    -- Verify client certificate
+    local cert = ssl_client:getpeercertificate()
+    if not cert then
+        error_print("No client certificate provided")
+        ssl_client:close()
+        return
+    end
+
+    debug_print("Client certificate verified")
+
+    ssl_client:settimeout(15)
     
     local request = ""
     while true do
-        local line, err = client:receive()
+        local line, err = ssl_client:receive()
         if err then
             error_print("Failed to receive request: " .. err)
-            client:close()
+            ssl_client:close()
             return
         end
         request = request .. line .. "\r\n"
@@ -118,18 +153,18 @@ local function handle_request(client)
     
     if not method or not path then
         error_print("Invalid request received")
-        client:send("HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nInvalid Request")
-        client:close()
+        ssl_client:send("HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nInvalid Request")
+        ssl_client:close()
         return
     end
     
     local content_length = tonumber(request:match("Content%-Length: (%d+)"))
     local body = ""
     if content_length then
-        body, err = client:receive(content_length)
+        body, err = ssl_client:receive(content_length)
         if err then
             error_print("Failed to receive request body: " .. err)
-            client:close()
+            ssl_client:close()
             return
         end
     end
@@ -141,7 +176,7 @@ local function handle_request(client)
         
         if not body or body == "" then
             debug_print("Bad request: missing command")
-            client:send("HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nCommand is required")
+            ssl_client:send("HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nCommand is required")
         else
             local command, webhook_url = body:match("^(.-)\n(.+)$")
             if not command then
@@ -156,8 +191,8 @@ local function handle_request(client)
             debug_print("Processed command: '" .. command .. "', Async: " .. tostring(is_async) .. ", Webhook: " .. (webhook_url or "None"))
             
             if FORWARD_MODE or is_async then
-                client:send("HTTP/1.1 202 Accepted\r\nContent-Type: text/plain\r\n\r\nRequest accepted for processing")
-                client:close()
+                ssl_client:send("HTTP/1.1 202 Accepted\r\nContent-Type: text/plain\r\n\r\nRequest accepted for processing")
+                ssl_client:close()
                 lanes.gen("*", handle_async_request)(DOCKER_IMAGE, command)
                 
                 local _, result = linda:receive("async_results")
@@ -166,24 +201,36 @@ local function handle_request(client)
                 send_webhook(webhook_to_use, "thiefd command results:\n" .. result)
             else
                 local result = execute_docker_command(DOCKER_IMAGE, command)
-                client:send("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n" .. result)
+                ssl_client:send("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n" .. result)
             end
         end
     else
         debug_print("Not found: " .. method .. " " .. path)
-        client:send("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nNot Found")
+        ssl_client:send("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nNot Found")
     end
     
     debug_print("Closing client connection")
-    client:close()
+    ssl_client:close()
 end
 
 -- Main function
 local function main()
     print_logo()
-    if arg[1] == "--forward" and arg[2] then
+    
+    if #arg < 1 then
+        print("Usage: lua script.lua <port> [--forward <webhook_url>]")
+        os.exit(1)
+    end
+    
+    local port = tonumber(arg[1])
+    if not port then
+        print("Invalid port number")
+        os.exit(1)
+    end
+    
+    if arg[2] == "--forward" and arg[3] then
         FORWARD_MODE = true
-        FORWARD_WEBHOOK_URL = arg[2]
+        FORWARD_WEBHOOK_URL = arg[3]
         print("Running in forward mode. All requests will be sent to: " .. FORWARD_WEBHOOK_URL)
     else
         print("Running in normal mode.")
@@ -192,15 +239,15 @@ local function main()
     print("Enter the Docker image name to use:")
     DOCKER_IMAGE = io.read()
     
-    local server = assert(socket.bind("0.0.0.0", 8080))
-    debug_print("Server listening on port 8080...")
+    local server, ctx = create_https_server(port)
+    debug_print("Server listening on port " .. port .. " (HTTPS with mutual TLS)...")
 
     while true do
         debug_print("Waiting for new connection...")
         local client, err = server:accept()
         if client then
             debug_print("New connection accepted")
-            local ok, err = pcall(handle_request, client)
+            local ok, err = pcall(handle_https_request, client, ctx)
             if not ok then
                 error_print("Error handling request: " .. tostring(err))
             end
