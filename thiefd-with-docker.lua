@@ -3,6 +3,7 @@ local ssl = require "ssl"
 local https = require "ssl.https"
 local ltn12 = require "ltn12"
 local lanes = require "lanes".configure()
+local os = require "os"
 
 -- Print ASCII Logo
 local function print_logo()
@@ -48,9 +49,9 @@ end
 local DOCKER_IMAGE
 local FORWARD_MODE = false
 local FORWARD_WEBHOOK_URL
-local SERVER_CERT = "/path/to/server.crt"
-local SERVER_KEY = "/path/to/server.key"
-local CA_CERT = "/path/to/ca.crt"
+local SERVER_CERT = "certs/server.crt"
+local SERVER_KEY = "certs/server.key"
+local CA_CERT = "certs/ca.crt"
 
 local function execute_docker_command(docker_image, command)
     if not docker_image or docker_image == "" then
@@ -213,6 +214,41 @@ local function handle_https_request(client, ctx)
     ssl_client:close()
 end
 
+local function generate_certificates()
+    print("Generating TLS certificates...")
+    
+    -- Prompt for certificate details
+    print("Enter the Common Name for the CA (e.g., Your Company Name):")
+    local ca_cn = io.read()
+    print("Enter the Common Name for the server certificate (e.g., localhost or your domain):")
+    local server_cn = io.read()
+    print("Enter the Common Name for the client certificate (e.g., ClientName):")
+    local client_cn = io.read()
+    
+    -- Create a directory for certificates
+    os.execute("mkdir -p certs")
+    
+    -- Generate CA key and certificate
+    os.execute("openssl genpkey -algorithm RSA -out certs/ca.key")
+    os.execute(string.format("openssl req -x509 -new -nodes -key certs/ca.key -sha256 -days 1024 -out certs/ca.crt -subj '/CN=%s'", ca_cn))
+    
+    -- Generate server key and CSR
+    os.execute("openssl genpkey -algorithm RSA -out certs/server.key")
+    os.execute(string.format("openssl req -new -key certs/server.key -out certs/server.csr -subj '/CN=%s'", server_cn))
+    
+    -- Sign server certificate with CA
+    os.execute("openssl x509 -req -in certs/server.csr -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial -out certs/server.crt -days 365 -sha256")
+    
+    -- Generate client key and CSR
+    os.execute("openssl genpkey -algorithm RSA -out certs/client.key")
+    os.execute(string.format("openssl req -new -key certs/client.key -out certs/client.csr -subj '/CN=%s'", client_cn))
+    
+    -- Sign client certificate with CA
+    os.execute("openssl x509 -req -in certs/client.csr -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial -out certs/client.crt -days 365 -sha256")
+    
+    print("Certificates generated successfully in the 'certs' directory.")
+end
+
 -- Main function
 local function main()
     print_logo()
@@ -234,6 +270,14 @@ local function main()
         print("Running in forward mode. All requests will be sent to: " .. FORWARD_WEBHOOK_URL)
     else
         print("Running in normal mode.")
+    end
+
+    print("Do you want to generate new TLS certificates? (y/n)")
+    local generate_certs = io.read():lower()
+    if generate_certs == "y" then
+        generate_certificates()
+    else
+        print("Using existing certificates. Make sure they are properly configured.")
     end
 
     print("Enter the Docker image name to use:")
