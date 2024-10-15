@@ -4,6 +4,7 @@ local https = require "ssl.https"
 local ltn12 = require "ltn12"
 local lanes = require "lanes".configure()
 local os = require "os"
+local crypto = require "crypto"
 
 -- Print ASCII Logo
 local function print_logo()
@@ -51,7 +52,7 @@ local FORWARD_MODE = false
 local FORWARD_WEBHOOK_URL
 local SERVER_CERT = "certs/server.crt"
 local SERVER_KEY = "certs/server.key"
-local CA_CERT = "certs/ca.crt"
+local SECRET_KEY
 
 local function execute_docker_command(docker_image, command)
     if not docker_image or docker_image == "" then
@@ -108,11 +109,14 @@ local function create_https_server(port)
         protocol = "any",
         key = SERVER_KEY,
         certificate = SERVER_CERT,
-        cafile = CA_CERT,
-        verify = {"peer", "fail_if_no_peer_cert"},
         options = {"all", "no_sslv2", "no_sslv3", "no_tlsv1"}
     }))
     return server, ctx
+end
+
+local function verify_hmac(message, signature)
+    local computed_hmac = crypto.hmac.digest("sha256", message, SECRET_KEY, true)
+    return crypto.hmac.digest("sha256", computed_hmac, SECRET_KEY, false) == signature
 end
 
 local function handle_https_request(client, ctx)
@@ -123,16 +127,6 @@ local function handle_https_request(client, ctx)
         ssl_client:close()
         return
     end
-
-    -- Verify client certificate
-    local cert = ssl_client:getpeercertificate()
-    if not cert then
-        error_print("No client certificate provided")
-        ssl_client:close()
-        return
-    end
-
-    debug_print("Client certificate verified")
 
     ssl_client:settimeout(15)
     
@@ -171,6 +165,21 @@ local function handle_https_request(client, ctx)
     end
     
     debug_print("Received request body: '" .. body .. "'")
+    
+    local hmac_signature = request:match("X%-HMAC%-Signature: (%S+)")
+    if not hmac_signature then
+        error_print("Missing HMAC signature")
+        ssl_client:send("HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nMissing HMAC signature")
+        ssl_client:close()
+        return
+    end
+
+    if not verify_hmac(body, hmac_signature) then
+        error_print("Invalid HMAC signature")
+        ssl_client:send("HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nInvalid HMAC signature")
+        ssl_client:close()
+        return
+    end
     
     if method == "POST" and path == "/thiefd" then
         debug_print("Processing POST /thiefd request")
@@ -214,41 +223,6 @@ local function handle_https_request(client, ctx)
     ssl_client:close()
 end
 
-local function generate_certificates()
-    print("Generating TLS certificates...")
-    
-    -- Prompt for certificate details
-    print("Enter the Common Name for the CA (e.g., Your Company Name):")
-    local ca_cn = io.read()
-    print("Enter the Common Name for the server certificate (e.g., localhost or your domain):")
-    local server_cn = io.read()
-    print("Enter the Common Name for the client certificate (e.g., ClientName):")
-    local client_cn = io.read()
-    
-    -- Create a directory for certificates
-    os.execute("mkdir -p certs")
-    
-    -- Generate CA key and certificate
-    os.execute("openssl genpkey -algorithm RSA -out certs/ca.key")
-    os.execute(string.format("openssl req -x509 -new -nodes -key certs/ca.key -sha256 -days 1024 -out certs/ca.crt -subj '/CN=%s'", ca_cn))
-    
-    -- Generate server key and CSR
-    os.execute("openssl genpkey -algorithm RSA -out certs/server.key")
-    os.execute(string.format("openssl req -new -key certs/server.key -out certs/server.csr -subj '/CN=%s'", server_cn))
-    
-    -- Sign server certificate with CA
-    os.execute("openssl x509 -req -in certs/server.csr -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial -out certs/server.crt -days 365 -sha256")
-    
-    -- Generate client key and CSR
-    os.execute("openssl genpkey -algorithm RSA -out certs/client.key")
-    os.execute(string.format("openssl req -new -key certs/client.key -out certs/client.csr -subj '/CN=%s'", client_cn))
-    
-    -- Sign client certificate with CA
-    os.execute("openssl x509 -req -in certs/client.csr -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial -out certs/client.crt -days 365 -sha256")
-    
-    print("Certificates generated successfully in the 'certs' directory.")
-end
-
 -- Main function
 local function main()
     print_logo()
@@ -272,19 +246,14 @@ local function main()
         print("Running in normal mode.")
     end
 
-    print("Do you want to generate new TLS certificates? (y/n)")
-    local generate_certs = io.read():lower()
-    if generate_certs == "y" then
-        generate_certificates()
-    else
-        print("Using existing certificates. Make sure they are properly configured.")
-    end
-
     print("Enter the Docker image name to use:")
     DOCKER_IMAGE = io.read()
+
+    print("Enter the secret key for HMAC:")
+    SECRET_KEY = io.read()
     
     local server, ctx = create_https_server(port)
-    debug_print("Server listening on port " .. port .. " (HTTPS with mutual TLS)...")
+    debug_print("Server listening on port " .. port .. " (HTTPS with HMAC authentication)...")
 
     while true do
         debug_print("Waiting for new connection...")
