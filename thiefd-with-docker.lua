@@ -139,7 +139,7 @@ local function handle_async_request(docker_image, command)
     linda:send("async_results", result)
 end
 
-local function handle_request(client)
+local function handle_request(client, custom_endpoint)
     debug_print("Handling new request")
     client:settimeout(15)
     
@@ -196,8 +196,8 @@ local function handle_request(client)
     
     debug_print("Received request body: '" .. body .. "'")
     
-    if method == "POST" and path == "/thiefd" then
-        debug_print("Processing POST /thiefd request")
+    if method == "POST" and path == custom_endpoint then
+        debug_print("Processing POST " .. custom_endpoint .. " request")
         
         if not body or body == "" then
             debug_print("Bad request: missing command")
@@ -251,6 +251,7 @@ local function main()
     SERVER_PORT = tonumber(os.getenv("THIEFD_SERVER_PORT")) or 443
     local domain = os.getenv("THIEFD_DOMAIN")
     local email = os.getenv("THIEFD_EMAIL")
+    local CUSTOM_ENDPOINT = os.getenv("THIEFD_CUSTOM_ENDPOINT") or "/thiefd"  -- New environment variable
 
     -- Validate required environment variables
     local required_vars = {
@@ -280,6 +281,7 @@ local function main()
 
     print("Using Docker image: " .. DOCKER_IMAGE)
     print("Server will listen on port: " .. SERVER_PORT)
+    print("Custom endpoint: " .. CUSTOM_ENDPOINT)
 
     if not check_certbot_installed() then
         error_print("Certbot is required for Let's Encrypt certificates. Please install it and try again.")
@@ -312,7 +314,9 @@ local function main()
             debug_print("New connection accepted")
             local ssl_client = assert(ssl.wrap(client, params))
             ssl_client:dohandshake()
-            local ok, err = pcall(handle_request, ssl_client)
+            local ok, err = pcall(function()
+                handle_request(ssl_client, CUSTOM_ENDPOINT)  -- Pass CUSTOM_ENDPOINT to handle_request
+            end)
             if not ok then
                 error_print("Error handling request: " .. tostring(err))
             end
