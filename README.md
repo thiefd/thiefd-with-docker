@@ -1,97 +1,100 @@
-# Thiefd with Docker
+# Thiefd - Functions-as-a-Service in Lua
 
-This README provides step-by-step instructions for setting up and running the `thiefd-with-docker.lua` script, which creates a REST API for executing Docker commands with mutual TLS authentication.
+This README provides step-by-step instructions for setting up and running THIEFD, and open-source function-as-a-service framework written in Lua.
 
 ## Prerequisites
 
-Before you begin, ensure you have the following installed on your system:
+- Ubuntu-based system (for apt-get commands)
+- Sudo access
+- Docker installed and configured
 
-1. **Lua**: Version 5.1 or later
-2. **LuaRocks**: The package manager for Lua
-3. **OpenSSL**: For generating TLS certificates
-4. **Docker**: For running containerized commands
+## Installation Steps
 
-## Step 1: Install Docker
+1. Install Lua and required system dependencies:
 
-If you don't have Docker installed, follow these steps:
-
-1. Visit the official Docker website: https://docs.docker.com/get-docker/
-2. Choose your operating system and follow the installation instructions.
-3. After installation, verify Docker is working by running:
    ```
-   docker --version
+   sudo apt-get update
+   sudo apt-get install -y lua5.3 liblua5.3-dev luarocks build-essential libssl-dev
    ```
 
-## Step 2: Install Lua and LuaRocks
+2. Install Lua dependencies using LuaRocks:
 
-Install Lua and LuaRocks using your system's package manager. For example, on Ubuntu:
-
-```bash
-sudo apt-get update
-sudo apt-get install lua5.3 luarocks
-```
-
-## Step 3: Install Lua Dependencies
-
-Install the required Lua libraries using LuaRocks:
-
-```bash
-sudo luarocks install luasocket
-sudo luarocks install luasec
-sudo luarocks install lanes
-```
-
-## Step 4: Install OpenSSL
-
-OpenSSL is usually pre-installed on most systems. If it's not, install it using your system's package manager. For example, on Ubuntu:
-
-```bash
-sudo apt-get install openssl
-```
-
-## Step 5: Prepare the Script
-
-1. Save the `thiefd-with-docker.lua` script to your desired location.
-2. Make sure the script has execute permissions:
-   ```bash
-   chmod +x thiefd-with-docker.lua
+   ```
+   sudo luarocks install luasocket
+   sudo luarocks install luasec
+   sudo luarocks install lanes
+   sudo luarocks install luafilesystem
    ```
 
-## Step 6: Run the Script
+3. Install Certbot for SSL certificate management:
 
-Run the script using the following command:
+   ```
+   sudo apt-get install -y certbot
+   ```
 
-```bash
-lua thiefd-with-docker.lua <port> [--forward <webhook_url>]
-```
+4. Set up the required environment variables:
 
-Replace `<port>` with the desired port number for the HTTPS server. The `--forward` option is optional and can be used to specify a webhook URL for forwarding results.
+   ```
+   export THIEFD_FORWARD_MODE=false
+   export THIEFD_DOCKER_IMAGE="your-docker-image-name"
+   export THIEFD_API_USERNAME="your-api-username"
+   export THIEFD_API_PASSWORD="your-api-password"
+   export THIEFD_SERVER_PORT=443
+   export THIEFD_DOMAIN="your-domain.com"
+   export THIEFD_EMAIL="your-email@example.com"
+   ```
 
-## Step 7: Follow the Prompts
+   Replace the placeholder values with your actual configuration.
 
-1. The script will ask if you want to generate new TLS certificates. Enter 'y' if you need to create new certificates, or 'n' if you already have certificates.
+   Optional: If you want to use forward mode, also set:
+   ```
+   export THIEFD_FORWARD_MODE=true
+   export THIEFD_FORWARD_WEBHOOK_URL="https://your-webhook-url.com"
+   ```
 
-2. If generating new certificates, you'll be prompted to enter:
-   - Common Name for the CA
-   - Common Name for the server certificate
-   - Common Name for the client certificate
+5. Save the Lua script to a file named `thiefd.lua`.
 
-3. Enter the Docker image name you want to use for executing commands.
+## Running the Script
 
-## Step 8: Use the API
+1. Make sure you have root privileges to bind to port 443:
 
-Once the server is running, you can send HTTPS POST requests to `https://your-server:port/thiefd` with the following:
+   ```
+   sudo -E lua thiefd.lua
+   ```
 
-- A valid client certificate for authentication
-- The command to execute in the request body
+   The `-E` flag ensures that your environment variables are passed to the sudo environment.
+
+2. The script will automatically attempt to obtain or renew a Let's Encrypt SSL certificate for your domain.
+
+3. Once running, the server will listen for HTTPS requests on the specified port (default 443).
+
+## Usage
+
+Send POST requests to `https://your-domain.com/thiefd` with the following:
+
+- Basic Authentication using the API username and password
+- Request body containing the Docker command to execute
 
 Example using curl:
 
-```bash
-curl -X POST \
-     --cert client.crt \
-     --key client.key \
-     --cacert ca.crt \
-     -d "your_docker_command_here" \
-     https://your-server:port/thiefd
 ```
+curl -X POST -u "your-api-username:your-api-password" \
+     -d "your docker command here" \
+     https://your-domain.com/thiefd
+```
+
+## Security Considerations
+
+- Ensure your server is properly secured, as this script allows remote execution of Docker commands.
+- Use strong, unique credentials for the API username and password.
+- Regularly update and patch your system and all dependencies.
+- Monitor logs and access to the server.
+
+## Troubleshooting
+
+- If you encounter permission issues, ensure you're running the script with appropriate privileges.
+- Check that all required environment variables are correctly set.
+- Verify that your domain's DNS is properly configured to point to your server's IP address.
+- Ensure that port 443 is open and accessible from the internet.
+
+For any issues or questions, please contact the script maintainer.
