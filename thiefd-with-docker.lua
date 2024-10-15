@@ -3,6 +3,7 @@ local http = require "socket.http"
 local ltn12 = require "ltn12"
 local lanes = require "lanes".configure()
 local ssl = require "ssl"
+local lfs = require "lfs"
 
 local function print_logo()
     local logo = [[
@@ -52,27 +53,41 @@ local API_USERNAME
 local API_PASSWORD
 local SERVER_PORT
 
--- Generate self-signed certificate using openssl command-line tool
-local function generate_self_signed_cert(domain)
-    debug_print("Generating self-signed certificate for domain: " .. domain)
-    local cert_file = "server.crt"
-    local key_file = "server.key"
-    
-    local cmd = string.format(
-        "openssl req -x509 -newkey rsa:4096 -keyout %s -out %s -days 365 -nodes -subj '/CN=%s'",
-        key_file, cert_file, domain
-    )
-    
-    local handle = io.popen(cmd)
+local function check_certbot_installed()
+    local handle = io.popen("which certbot")
     local result = handle:read("*a")
-    local success = handle:close()
+    handle:close()
+    return result ~= ""
+end
+
+local function install_certbot()
+    print("Installing Certbot...")
+    os.execute("sudo apt-get update")
+    os.execute("sudo apt-get install -y certbot")
+end
+
+local function issue_letsencrypt_cert(domain, email)
+    print("Issuing/renewing Let's Encrypt certificate for " .. domain)
+    local cmd = string.format(
+        "sudo certbot certonly --standalone --non-interactive --agree-tos --email %s -d %s",
+        email, domain
+    )
+    local success = os.execute(cmd)
     
     if not success then
-        error_print("Failed to generate certificate: " .. result)
+        error_print("Failed to issue/renew Let's Encrypt certificate")
         return nil, nil
     end
     
-    debug_print("Certificate and key generated: " .. cert_file .. ", " .. key_file)
+    local cert_file = "/etc/letsencrypt/live/" .. domain .. "/fullchain.pem"
+    local key_file = "/etc/letsencrypt/live/" .. domain .. "/privkey.pem"
+    
+    if not lfs.attributes(cert_file) or not lfs.attributes(key_file) then
+        error_print("Certificate files not found after issuing/renewal")
+        return nil, nil
+    end
+    
+    debug_print("Certificate issued/renewed successfully")
     return cert_file, key_file
 end
 
@@ -243,28 +258,30 @@ local function main()
     print("Enter the API password:")
     API_PASSWORD = io.read()
     
-    print("Enter the port number for the server (default: 8443):")
-    SERVER_PORT = tonumber(io.read()) or 8443
+    print("Enter the port number for the server (default: 443):")
+    SERVER_PORT = tonumber(io.read()) or 443
     
-    print("Enter the domain name for the certificate (default: localhost):")
+    print("Enter the domain name for the certificate:")
     local domain = io.read()
-    if domain == "" then domain = "localhost" end
     
-    print("Do you want to generate a new self-signed certificate? (y/n)")
-    local generate_cert = io.read():lower()
+    print("Enter your email address for Let's Encrypt notifications:")
+    local email = io.read()
     
-    local cert_file, key_file
-    if generate_cert == "y" then
-        cert_file, key_file = generate_self_signed_cert(domain)
-        if not cert_file or not key_file then
-            error_print("Failed to generate certificate. Exiting.")
+    if not check_certbot_installed() then
+        print("Certbot is not installed. Do you want to install it? (y/n)")
+        local install = io.read():lower()
+        if install == "y" then
+            install_certbot()
+        else
+            error_print("Certbot is required for Let's Encrypt certificates. Exiting.")
             os.exit(1)
         end
-    else
-        print("Enter the path to the certificate file:")
-        cert_file = io.read()
-        print("Enter the path to the key file:")
-        key_file = io.read()
+    end
+    
+    local cert_file, key_file = issue_letsencrypt_cert(domain, email)
+    if not cert_file or not key_file then
+        error_print("Failed to issue/renew Let's Encrypt certificate. Exiting.")
+        os.exit(1)
     end
     
     local params = {
