@@ -97,4 +97,4 @@ curl -X POST -u "your-api-username:your-api-password" \
 - Verify that your domain's DNS is properly configured to point to your server's IP address.
 - Ensure that port 443 is open and accessible from the internet.
 
-For any issues or questions, please contact the script maintainer.
+For any issues or questions, please contact me[at]thiefd.com.
