@@ -4,7 +4,6 @@ local https = require "ssl.https"
 local ltn12 = require "ltn12"
 local lanes = require "lanes".configure()
 local os = require "os"
-local crypto = require "crypto"
 
 -- Print ASCII Logo
 local function print_logo()
@@ -52,7 +51,6 @@ local FORWARD_MODE = false
 local FORWARD_WEBHOOK_URL
 local SERVER_CERT = "certs/server.crt"
 local SERVER_KEY = "certs/server.key"
-local SECRET_KEY
 
 local function execute_docker_command(docker_image, command)
     if not docker_image or docker_image == "" then
@@ -114,11 +112,6 @@ local function create_https_server(port)
     return server, ctx
 end
 
-local function verify_hmac(message, signature)
-    local computed_hmac = crypto.hmac.digest("sha256", message, SECRET_KEY, true)
-    return crypto.hmac.digest("sha256", computed_hmac, SECRET_KEY, false) == signature
-end
-
 local function handle_https_request(client, ctx)
     local ssl_client = assert(ssl.wrap(client, ctx))
     local success, err = ssl_client:dohandshake()
@@ -127,6 +120,8 @@ local function handle_https_request(client, ctx)
         ssl_client:close()
         return
     end
+
+    debug_print("TLS handshake successful")
 
     ssl_client:settimeout(15)
     
@@ -165,21 +160,6 @@ local function handle_https_request(client, ctx)
     end
     
     debug_print("Received request body: '" .. body .. "'")
-    
-    local hmac_signature = request:match("X%-HMAC%-Signature: (%S+)")
-    if not hmac_signature then
-        error_print("Missing HMAC signature")
-        ssl_client:send("HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nMissing HMAC signature")
-        ssl_client:close()
-        return
-    end
-
-    if not verify_hmac(body, hmac_signature) then
-        error_print("Invalid HMAC signature")
-        ssl_client:send("HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nInvalid HMAC signature")
-        ssl_client:close()
-        return
-    end
     
     if method == "POST" and path == "/thiefd" then
         debug_print("Processing POST /thiefd request")
@@ -223,6 +203,26 @@ local function handle_https_request(client, ctx)
     ssl_client:close()
 end
 
+local function generate_certificates()
+    print("Generating TLS certificates...")
+    
+    -- Prompt for certificate details
+    print("Enter the Common Name for the server certificate (e.g., localhost or your domain):")
+    local server_cn = io.read()
+    
+    -- Create a directory for certificates
+    os.execute("mkdir -p certs")
+    
+    -- Generate server key and CSR
+    os.execute("openssl genpkey -algorithm RSA -out certs/server.key")
+    os.execute(string.format("openssl req -new -key certs/server.key -out certs/server.csr -subj '/CN=%s'", server_cn))
+    
+    -- Self-sign server certificate
+    os.execute("openssl x509 -req -in certs/server.csr -signkey certs/server.key -out certs/server.crt -days 365 -sha256")
+    
+    print("Server certificate generated successfully in the 'certs' directory.")
+end
+
 -- Main function
 local function main()
     print_logo()
@@ -246,14 +246,19 @@ local function main()
         print("Running in normal mode.")
     end
 
+    print("Do you want to generate a new TLS certificate? (y/n)")
+    local generate_cert = io.read():lower()
+    if generate_cert == "y" then
+        generate_certificates()
+    else
+        print("Using existing certificate. Make sure it is properly configured.")
+    end
+
     print("Enter the Docker image name to use:")
     DOCKER_IMAGE = io.read()
-
-    print("Enter the secret key for HMAC:")
-    SECRET_KEY = io.read()
     
     local server, ctx = create_https_server(port)
-    debug_print("Server listening on port " .. port .. " (HTTPS with HMAC authentication)...")
+    debug_print("Server listening on port " .. port .. " (HTTPS)...")
 
     while true do
         debug_print("Waiting for new connection...")
