@@ -4,7 +4,6 @@ local ltn12 = require "ltn12"
 local lanes = require "lanes".configure()
 local ssl = require "ssl"
 
--- Print ASCII Logo
 local function print_logo()
     local logo = [[
 ████████╗██╗  ██╗██╗███████╗███████╗██████╗ 
@@ -18,7 +17,6 @@ local function print_logo()
     print(logo)
 end
 
--- Utility functions
 local function simple_json_encode(data)
     if type(data) == "string" then
         return '"' .. data:gsub('"', '\\"'):gsub("\n", "\\n") .. '"'
@@ -55,14 +53,14 @@ local API_PASSWORD
 local SERVER_PORT
 
 -- Generate self-signed certificate using openssl command-line tool
-local function generate_self_signed_cert()
-    debug_print("Generating self-signed certificate...")
+local function generate_self_signed_cert(domain)
+    debug_print("Generating self-signed certificate for domain: " .. domain)
     local cert_file = "server.crt"
     local key_file = "server.key"
     
     local cmd = string.format(
-        "openssl req -x509 -newkey rsa:4096 -keyout %s -out %s -days 365 -nodes -subj '/CN=localhost'",
-        key_file, cert_file
+        "openssl req -x509 -newkey rsa:4096 -keyout %s -out %s -days 365 -nodes -subj '/CN=%s'",
+        key_file, cert_file, domain
     )
     
     local handle = io.popen(cmd)
@@ -248,12 +246,16 @@ local function main()
     print("Enter the port number for the server (default: 8443):")
     SERVER_PORT = tonumber(io.read()) or 8443
     
+    print("Enter the domain name for the certificate (default: localhost):")
+    local domain = io.read()
+    if domain == "" then domain = "localhost" end
+    
     print("Do you want to generate a new self-signed certificate? (y/n)")
     local generate_cert = io.read():lower()
     
     local cert_file, key_file
     if generate_cert == "y" then
-        cert_file, key_file = generate_self_signed_cert()
+        cert_file, key_file = generate_self_signed_cert(domain)
         if not cert_file or not key_file then
             error_print("Failed to generate certificate. Exiting.")
             os.exit(1)
