@@ -51,6 +51,7 @@ local FORWARD_MODE = false
 local FORWARD_WEBHOOK_URL
 local SERVER_CERT = "certs/server.crt"
 local SERVER_KEY = "certs/server.key"
+local API_KEYS = {}
 
 local function execute_docker_command(docker_image, command)
     if not docker_image or docker_image == "" then
@@ -112,6 +113,11 @@ local function create_https_server(port)
     return server, ctx
 end
 
+local function verify_api_key(request_headers)
+    local api_key = request_headers:match("Authorization: Bearer (%S+)")
+    return api_key and API_KEYS[api_key]
+end
+
 local function handle_https_request(client, ctx)
     local ssl_client = assert(ssl.wrap(client, ctx))
     local success, err = ssl_client:dohandshake()
@@ -144,6 +150,15 @@ local function handle_https_request(client, ctx)
     if not method or not path then
         error_print("Invalid request received")
         ssl_client:send("HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nInvalid Request")
+        ssl_client:close()
+        return
+    end
+    
+    local request_headers = request:match("(.-\r\n\r\n)")
+    
+    if not verify_api_key(request_headers) then
+        debug_print("Invalid or missing API key")
+        ssl_client:send("HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nUnauthorized: Invalid or missing API key")
         ssl_client:close()
         return
     end
@@ -223,6 +238,61 @@ local function generate_certificates()
     print("Server certificate generated successfully in the 'certs' directory.")
 end
 
+local function generate_strong_api_key(length)
+    length = length or 32
+    local charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    local key = ""
+    math.randomseed(os.time())
+    for _ = 1, length do
+        local rand = math.random(#charset)
+        key = key .. string.sub(charset, rand, rand)
+    end
+    return key
+end
+
+local function save_api_key(key)
+    local file = io.open("api_keys.txt", "a")
+    if file then
+        file:write(key .. "\n")
+        file:close()
+        print("API key saved successfully")
+    else
+        error_print("Failed to save API key")
+    end
+end
+
+local function setup_api_key()
+    print("Do you want to generate a new API key? (y/n)")
+    local generate_new = io.read():lower()
+    
+    if generate_new == "y" then
+        local new_key = generate_strong_api_key()
+        print("Generated new API key: " .. new_key)
+        print("Do you want to save this key? (y/n)")
+        local save_key = io.read():lower()
+        if save_key == "y" then
+            save_api_key(new_key)
+        else
+            print("API key not saved. Please remember to add it manually to api_keys.txt")
+        end
+    else
+        print("Please ensure you have added your API key to api_keys.txt")
+    end
+end
+
+local function load_api_keys()
+    local file = io.open("api_keys.txt", "r")
+    if file then
+        for line in file:lines() do
+            API_KEYS[line] = true
+        end
+        file:close()
+        debug_print("API keys loaded successfully")
+    else
+        error_print("Failed to load API keys")
+    end
+end
+
 -- Main function
 local function main()
     print_logo()
@@ -253,6 +323,9 @@ local function main()
     else
         print("Using existing certificate. Make sure it is properly configured.")
     end
+
+    setup_api_key()
+    load_api_keys()
 
     print("Enter the Docker image name to use:")
     DOCKER_IMAGE = io.read()
