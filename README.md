@@ -1,4 +1,4 @@
-# Thiefd, Functions-as-a-Service in Lua
+# Thiefd, Functions-as-a-Service in Lua with Docker
 
 This README provides step-by-step instructions for setting up and running THIEFD, an open-source function-as-a-service framework written in Lua.
 
