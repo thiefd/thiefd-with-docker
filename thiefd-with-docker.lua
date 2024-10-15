@@ -241,49 +241,57 @@ end
 -- Main function
 local function main()
     print_logo()
-    if arg[1] == "--forward" and arg[2] then
-        FORWARD_MODE = true
-        FORWARD_WEBHOOK_URL = arg[2]
+
+    -- Read configuration from environment variables
+    FORWARD_MODE = os.getenv("THIEFD_FORWARD_MODE") == "true"
+    FORWARD_WEBHOOK_URL = os.getenv("THIEFD_FORWARD_WEBHOOK_URL")
+    DOCKER_IMAGE = os.getenv("THIEFD_DOCKER_IMAGE")
+    API_USERNAME = os.getenv("THIEFD_API_USERNAME")
+    API_PASSWORD = os.getenv("THIEFD_API_PASSWORD")
+    SERVER_PORT = tonumber(os.getenv("THIEFD_SERVER_PORT")) or 443
+    local domain = os.getenv("THIEFD_DOMAIN")
+    local email = os.getenv("THIEFD_EMAIL")
+
+    -- Validate required environment variables
+    local required_vars = {
+        "THIEFD_DOCKER_IMAGE",
+        "THIEFD_API_USERNAME",
+        "THIEFD_API_PASSWORD",
+        "THIEFD_DOMAIN",
+        "THIEFD_EMAIL"
+    }
+
+    for _, var in ipairs(required_vars) do
+        if not os.getenv(var) then
+            error_print("Missing required environment variable: " .. var)
+            os.exit(1)
+        end
+    end
+
+    if FORWARD_MODE then
+        if not FORWARD_WEBHOOK_URL then
+            error_print("THIEFD_FORWARD_WEBHOOK_URL is required when THIEFD_FORWARD_MODE is true")
+            os.exit(1)
+        end
         print("Running in forward mode. All requests will be sent to: " .. FORWARD_WEBHOOK_URL)
     else
         print("Running in normal mode.")
     end
 
-    print("Enter the Docker image name to use:")
-    DOCKER_IMAGE = io.read()
-    
-    print("Enter the API username:")
-    API_USERNAME = io.read()
-    
-    print("Enter the API password:")
-    API_PASSWORD = io.read()
-    
-    print("Enter the port number for the server (default: 443):")
-    SERVER_PORT = tonumber(io.read()) or 443
-    
-    print("Enter the domain name for the certificate:")
-    local domain = io.read()
-    
-    print("Enter your email address for Let's Encrypt notifications:")
-    local email = io.read()
-    
+    print("Using Docker image: " .. DOCKER_IMAGE)
+    print("Server will listen on port: " .. SERVER_PORT)
+
     if not check_certbot_installed() then
-        print("Certbot is not installed. Do you want to install it? (y/n)")
-        local install = io.read():lower()
-        if install == "y" then
-            install_certbot()
-        else
-            error_print("Certbot is required for Let's Encrypt certificates. Exiting.")
-            os.exit(1)
-        end
+        error_print("Certbot is required for Let's Encrypt certificates. Please install it and try again.")
+        os.exit(1)
     end
-    
+
     local cert_file, key_file = issue_letsencrypt_cert(domain, email)
     if not cert_file or not key_file then
         error_print("Failed to issue/renew Let's Encrypt certificate. Exiting.")
         os.exit(1)
     end
-    
+
     local params = {
         mode = "server",
         protocol = "any",
@@ -293,7 +301,7 @@ local function main()
         verify = {"none"},
         options = {"all", "no_sslv2", "no_sslv3", "no_tlsv1"},
     }
-    
+
     local server = assert(socket.bind("0.0.0.0", SERVER_PORT))
     debug_print("Server listening on port " .. SERVER_PORT .. " (HTTPS)...")
 
