@@ -4,6 +4,7 @@ local ltn12 = require "ltn12"
 local lanes = require "lanes".configure()
 local ssl = require "ssl"
 local lfs = require "lfs"
+local jwt = require "luajwt"  -- New requirement for JWT handling
 
 local function print_logo()
     local logo = [[
@@ -49,8 +50,7 @@ end
 local DOCKER_IMAGE
 local FORWARD_MODE = false
 local FORWARD_WEBHOOK_URL
-local API_USERNAME
-local API_PASSWORD
+local JWT_SECRET
 local SERVER_PORT
 
 local function check_certbot_installed()
@@ -139,6 +139,15 @@ local function handle_async_request(docker_image, command)
     linda:send("async_results", result)
 end
 
+local function verify_jwt(token)
+    local payload, err = jwt.decode(token, JWT_SECRET, true)
+    if err then
+        error_print("JWT verification failed: " .. err)
+        return nil
+    end
+    return payload
+end
+
 local function handle_request(client, custom_endpoint)
     debug_print("Handling new request")
     client:settimeout(15)
@@ -167,18 +176,16 @@ local function handle_request(client, custom_endpoint)
     end
     
     -- Check authentication
-    local auth_header = request:match("Authorization: Basic ([%w+/=]+)")
+    local auth_header = request:match("Authorization: Bearer ([%w%-_%.]+)")
     if not auth_header then
-        client:send("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Docker API\"\r\nContent-Type: text/plain\r\n\r\nAuthentication required")
+        client:send("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Type: text/plain\r\n\r\nAuthentication required")
         client:close()
         return
     end
     
-    local decoded_auth = (require"mime").unb64(auth_header)
-    local username, password = decoded_auth:match("(.+):(.+)")
-    
-    if username ~= API_USERNAME or password ~= API_PASSWORD then
-        client:send("HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nInvalid credentials")
+    local payload = verify_jwt(auth_header)
+    if not payload then
+        client:send("HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nInvalid token")
         client:close()
         return
     end
@@ -246,18 +253,16 @@ local function main()
     FORWARD_MODE = os.getenv("THIEFD_FORWARD_MODE") == "true"
     FORWARD_WEBHOOK_URL = os.getenv("THIEFD_FORWARD_WEBHOOK_URL")
     DOCKER_IMAGE = os.getenv("THIEFD_DOCKER_IMAGE")
-    API_USERNAME = os.getenv("THIEFD_API_USERNAME")
-    API_PASSWORD = os.getenv("THIEFD_API_PASSWORD")
+    JWT_SECRET = os.getenv("THIEFD_JWT_SECRET")
     SERVER_PORT = tonumber(os.getenv("THIEFD_SERVER_PORT")) or 443
     local domain = os.getenv("THIEFD_DOMAIN")
     local email = os.getenv("THIEFD_EMAIL")
-    local CUSTOM_ENDPOINT = os.getenv("THIEFD_CUSTOM_ENDPOINT") or "/thiefd"  -- New environment variable
+    local CUSTOM_ENDPOINT = os.getenv("THIEFD_CUSTOM_ENDPOINT") or "/thiefd"
 
     -- Validate required environment variables
     local required_vars = {
         "THIEFD_DOCKER_IMAGE",
-        "THIEFD_API_USERNAME",
-        "THIEFD_API_PASSWORD",
+        "THIEFD_JWT_SECRET",
         "THIEFD_DOMAIN",
         "THIEFD_EMAIL"
     }
@@ -315,7 +320,7 @@ local function main()
             local ssl_client = assert(ssl.wrap(client, params))
             ssl_client:dohandshake()
             local ok, err = pcall(function()
-                handle_request(ssl_client, CUSTOM_ENDPOINT)  -- Pass CUSTOM_ENDPOINT to handle_request
+                handle_request(ssl_client, CUSTOM_ENDPOINT)
             end)
             if not ok then
                 error_print("Error handling request: " .. tostring(err))
