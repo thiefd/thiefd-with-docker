@@ -22,6 +22,8 @@ This README provides step-by-step instructions for setting up and running THIEFD
    sudo luarocks install luasec
    sudo luarocks install lanes
    sudo luarocks install luafilesystem
+   sudo luarocks install lua-cjson
+   sudo luarocks install compat53
    ```
 
 3. Install Certbot for SSL certificate management:
